@@ -1,0 +1,3 @@
+website_url,county_name,error_message
+https://beacon.schneidercorp.com/Application.aspx?AppID=502,Sullivan County IN,UnboundLocalError: cannot access local variable 'srid' where it is not associated with a value
+https://beacon.schneidercorp.com/Application.aspx?AppID=578,Tippecanoe County IN,
