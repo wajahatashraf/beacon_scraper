@@ -26,45 +26,48 @@ def update_config(beacon_url, county_name):
     print(f"✅ Updated config.py: BEACON_URL={beacon_url}, COUNTY_NAME='{county_name}'")
 
 def log_error_to_csv(csv_file, county_name, error_message):
-    """Append or update an error log for a county in the CSV"""
-    temp_file = csv_file + ".tmp"
-
+    """Update error_message in the same CSV (no temp file)."""
     try:
-        # Read and write in separate steps to avoid file locking
-        with open(csv_file, newline="", encoding="utf-8-sig") as infile:
-            reader = csv.DictReader(infile)
-            fieldnames = reader.fieldnames or []
-            rows = list(reader)
+        rows = []
+        fieldnames = []
 
+        # ✅ Read existing rows
+        if os.path.exists(csv_file):
+            with open(csv_file, newline="", encoding="utf-8-sig") as infile:
+                reader = csv.DictReader(infile)
+                fieldnames = reader.fieldnames or []
+                rows = list(reader)
+
+        # ✅ Ensure required columns
+        if "county_name" not in fieldnames:
+            fieldnames.append("county_name")
         if "error_message" not in fieldnames:
             fieldnames.append("error_message")
 
+        # ✅ Update or append the county row
+        county_found = False
         for row in rows:
-            if row["county_name"].strip().lower() == county_name.strip().lower():
+            if row.get("county_name", "").strip().lower() == county_name.strip().lower():
                 row["error_message"] = error_message
+                county_found = True
             elif "error_message" not in row:
                 row["error_message"] = ""
 
-        with open(temp_file, "w", newline="", encoding="utf-8") as outfile:
+        if not county_found:
+            rows.append({"county_name": county_name, "error_message": error_message})
+
+        # ✅ Write back to same CSV
+        with open(csv_file, "w", newline="", encoding="utf-8") as outfile:
             writer = csv.DictWriter(outfile, fieldnames=fieldnames)
             writer.writeheader()
             writer.writerows(rows)
-
-        # Retry replacing file up to 3 times (for Windows locking)
-        for attempt in range(3):
-            try:
-                os.replace(temp_file, csv_file)
-                break
-            except PermissionError:
-                print(f"⚠️ File lock issue on attempt {attempt+1}, retrying...")
-                time.sleep(1)
-        else:
-            print(f"❌ Could not replace {csv_file} after retries (file may be locked).")
 
         print(f"⚠️ Logged error for {county_name}: {error_message}")
 
     except Exception as log_err:
         print(f"❌ Failed to log error for {county_name}: {log_err}")
+
+
 
 def main():
     csv_file = "county_urls.csv"  # change filename if needed
@@ -91,10 +94,18 @@ def main():
                 # === Step 1: Making Table ===
                 print("🚀  ====== Starting Making Table ======")
                 srid = extract_srid()
+
+                zoning_layers = extract_zoning_layer_info()
+                if not zoning_layers:
+                    message = "No zoning layers found."
+                    print(f"\t⚠️ {message}")
+                    log_error_to_csv(csv_file, county_name, message)
+                    print(f"🎉 Completed county: {county_name}\n")
+                    continue
+
                 south, north, west, east = get_bounding_box()
                 create_table_and_grid(srid, south, north, west, east)
 
-                zoning_layers = extract_zoning_layer_info()
                 for layer in zoning_layers:
                     layer_id = layer["LayerId"]
                     layer_name = layer["LayerName"].replace(" ", "_").lower()

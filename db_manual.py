@@ -5,6 +5,7 @@ from qmap_scraper.config import DB_CONFIG
 import qmap_scraper.config
 import importlib
 from bs4 import BeautifulSoup
+import re  # Import re module here
 
 
 # ========================================
@@ -64,7 +65,16 @@ def create_table(conn,FINAL_TABLE_NAME):
     except Exception as e:
         print(f"❌ Error creating table: {e}")
 
-
+def sanitize_key(key):
+    """
+    Function to sanitize column names to comply with SQL naming conventions.
+    - Replace invalid characters with underscores.
+    - Prefix column names that start with numbers with 'col_'.
+    """
+    key = re.sub(r'\W+', '_', key)  # Replace non-alphanumeric characters with underscores
+    if key[0].isdigit():  # If the key starts with a digit, prefix it with 'col_'
+        key = f"col_{key}"
+    return key.lower()
 # ========================================
 #  Data Insertion
 # ========================================
@@ -94,7 +104,46 @@ def process_json_file(file_path, conn, srid, insert_counter,FINAL_TABLE_NAME):
                     from bs4 import BeautifulSoup
                     import html
 
-                    if "<" in tip_html and ">" in tip_html:
+                    # ======================
+                    # 🆕 NEW CASES (before main logic)
+                    # ======================
+                    if (
+                            'Zoning:' in tip_html
+                            and '<b>' in tip_html
+                            and '<a href' in tip_html
+                    ):
+                        # Example:
+                        # <div>Zoning: <b>I-1</b></div>
+                        # <div><a href="https://...">View I-1 Ordinance</a></div>
+                        soup = BeautifulSoup(tip_html, "html.parser")
+                        zoning_div = soup.find("div")
+                        link_div = zoning_div.find_next_sibling("div") if zoning_div else None
+
+                        # Extract zoning value
+                        if zoning_div and zoning_div.find("b"):
+                            zoning_value = zoning_div.find("b").get_text(strip=True)
+                            if zoning_value:
+                                dynamic_columns["zoning"] = zoning_value
+
+                        # Extract ordinance link
+                        if link_div and link_div.find("a") and link_div.find("a").get("href"):
+                            dynamic_columns["ordinance_link"] = link_div.find("a")["href"].strip()
+
+                    elif (
+                            tip_html.strip().startswith("<div>")
+                            and "</div>" in tip_html
+                            and " " not in BeautifulSoup(tip_html, "html.parser").get_text(strip=True)
+                            and ":" not in tip_html
+                            and "<b>" not in tip_html
+                            and "<a" not in tip_html
+                    ):
+                        # Example: <div>C1</div>
+                        soup = BeautifulSoup(tip_html, "html.parser")
+                        value = soup.get_text(strip=True)
+                        if value:
+                            dynamic_columns["tip_value"] = value
+
+                    elif  "<" in tip_html and ">" in tip_html:
                         soup = BeautifulSoup(tip_html, "html.parser")
                         divs = soup.find_all("div")
 
@@ -107,7 +156,8 @@ def process_json_file(file_path, conn, srid, insert_counter,FINAL_TABLE_NAME):
                                 b_tags = div.find_all("b")
                                 if b_tags:
                                     for b_tag in b_tags:
-                                        key = b_tag.get_text(strip=True).replace(":", "").replace(" ", "_").lower()
+                                        key = sanitize_key(
+                                            b_tag.get_text(strip=True).replace(":", "").replace(" ", "_"))
 
                                         # Extract everything after this <b> until the next <b> or <br>
                                         value_parts = []
@@ -129,7 +179,7 @@ def process_json_file(file_path, conn, srid, insert_counter,FINAL_TABLE_NAME):
                                 separator = ":" if ":" in text else "=" if "=" in text else None
                                 if separator:
                                     parts = text.split(separator, 1)
-                                    key = parts[0].strip().replace(" ", "_").lower()
+                                    key = sanitize_key(parts[0].strip().replace(" ", "_"))
                                     value = parts[1].strip()
 
                                     # Extract link if present
@@ -140,12 +190,16 @@ def process_json_file(file_path, conn, srid, insert_counter,FINAL_TABLE_NAME):
                                     if value:
                                         dynamic_columns[key] = value
 
+                                plain_text = div.get_text(strip=True)
+                                if plain_text:
+                                    dynamic_columns["tip_value"] = plain_text
+
                         # ======================
                         # Case 3: Standalone <b> tags outside <div>
                         # ======================
                         elif soup.find("b"):
                             for b_tag in soup.find_all("b"):
-                                key = b_tag.get_text(strip=True).replace(":", "").replace(" ", "_").lower()
+                                key = sanitize_key(b_tag.get_text(strip=True).replace(":", "").replace(" ", "_"))
                                 value = b_tag.next_sibling
                                 if value:
                                     value = html.unescape(str(value)).strip().replace("\xa0", "").replace("\n", "")
@@ -167,7 +221,7 @@ def process_json_file(file_path, conn, srid, insert_counter,FINAL_TABLE_NAME):
                                     continue
 
                                 parts = line.split(separator, 1)
-                                key = parts[0].strip().replace(" ", "_").lower()
+                                key = sanitize_key(parts[0].strip().replace(" ", "_"))
                                 value = parts[1].strip()
 
                                 # Handle links (like "View: <a href=...>")
@@ -185,7 +239,7 @@ def process_json_file(file_path, conn, srid, insert_counter,FINAL_TABLE_NAME):
                         for line in tip_html.splitlines():
                             if "=" in line:
                                 key, value = line.split("=", 1)
-                                key = key.strip().replace(" ", "_").lower()
+                                key = sanitize_key(key.strip().replace(" ", "_"))
                                 value = value.strip()
                                 dynamic_columns[key] = value
 
@@ -215,6 +269,7 @@ def process_json_file(file_path, conn, srid, insert_counter,FINAL_TABLE_NAME):
     except Exception as e:
         print(f"❌ Error processing {file_path}: {e}")
         conn.rollback()
+
 
 
 def insert_into_db(conn, geom, srid, dynamic_columns,FINAL_TABLE_NAME):
@@ -254,8 +309,8 @@ def insert_into_db(conn, geom, srid, dynamic_columns,FINAL_TABLE_NAME):
 #  Main Function
 # ========================================
 def db_insert(srid):
-    layer_name = 'haubstadt_zoning'
-    COUNTY_NAME = "Gibson County IN"
+    layer_name = 'zoning'
+    COUNTY_NAME = "Worth County IA"
     FOLDER_NAME = COUNTY_NAME.lower().replace(" ", "_")  # cass_county_il
     TABLE_NAME =COUNTY_NAME.lower().replace(" ", "_")  # cass_county_il
     safe_layer_name = layer_name.replace(" ", "_").lower()
@@ -280,5 +335,5 @@ def db_insert(srid):
 
 
 if __name__ == "__main__":
-    srid = 102674
+    srid = 102675
     db_insert(srid)

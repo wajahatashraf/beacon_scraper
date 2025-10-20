@@ -190,6 +190,9 @@ def capture_qps_and_download():
         options.add_argument("--start-maximized")
         options.add_argument("--disable-blink-features=AutomationControlled")
         options.set_capability("goog:loggingPrefs", {"performance": "ALL"})
+        options.add_argument("--disable-background-timer-throttling")
+        options.add_argument("--disable-backgrounding-occluded-windows")
+        options.add_argument("--disable-renderer-backgrounding")
         prefs = {
             "download.default_directory": DOWNLOAD_FOLDER,
             "download.prompt_for_download": False,

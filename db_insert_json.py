@@ -5,7 +5,7 @@ from config import DB_CONFIG
 import config
 import importlib
 from bs4 import BeautifulSoup
-
+import re  # Import re module here
 
 # ========================================
 #  Database Connection
@@ -64,7 +64,16 @@ def create_table(conn,FINAL_TABLE_NAME):
     except Exception as e:
         print(f"❌ Error creating table: {e}")
 
-
+def sanitize_key(key):
+    """
+    Function to sanitize column names to comply with SQL naming conventions.
+    - Replace invalid characters with underscores.
+    - Prefix column names that start with numbers with 'col_'.
+    """
+    key = re.sub(r'\W+', '_', key)  # Replace non-alphanumeric characters with underscores
+    if key[0].isdigit():  # If the key starts with a digit, prefix it with 'col_'
+        key = f"col_{key}"
+    return key.lower()
 # ========================================
 #  Data Insertion
 # ========================================
@@ -94,7 +103,46 @@ def process_json_file(file_path, conn, srid, insert_counter,FINAL_TABLE_NAME):
                     from bs4 import BeautifulSoup
                     import html
 
-                    if "<" in tip_html and ">" in tip_html:
+                    # ======================
+                    # 🆕 NEW CASES (before main logic)
+                    # ======================
+                    if (
+                            'Zoning:' in tip_html
+                            and '<b>' in tip_html
+                            and '<a href' in tip_html
+                    ):
+                        # Example:
+                        # <div>Zoning: <b>I-1</b></div>
+                        # <div><a href="https://...">View I-1 Ordinance</a></div>
+                        soup = BeautifulSoup(tip_html, "html.parser")
+                        zoning_div = soup.find("div")
+                        link_div = zoning_div.find_next_sibling("div") if zoning_div else None
+
+                        # Extract zoning value
+                        if zoning_div and zoning_div.find("b"):
+                            zoning_value = zoning_div.find("b").get_text(strip=True)
+                            if zoning_value:
+                                dynamic_columns["zoning"] = zoning_value
+
+                        # Extract ordinance link
+                        if link_div and link_div.find("a") and link_div.find("a").get("href"):
+                            dynamic_columns["ordinance_link"] = link_div.find("a")["href"].strip()
+
+                    elif (
+                            tip_html.strip().startswith("<div>")
+                            and "</div>" in tip_html
+                            and " " not in BeautifulSoup(tip_html, "html.parser").get_text(strip=True)
+                            and ":" not in tip_html
+                            and "<b>" not in tip_html
+                            and "<a" not in tip_html
+                    ):
+                        # Example: <div>C1</div>
+                        soup = BeautifulSoup(tip_html, "html.parser")
+                        value = soup.get_text(strip=True)
+                        if value:
+                            dynamic_columns["tip_value"] = value
+
+                    elif  "<" in tip_html and ">" in tip_html:
                         soup = BeautifulSoup(tip_html, "html.parser")
                         divs = soup.find_all("div")
 
@@ -107,14 +155,15 @@ def process_json_file(file_path, conn, srid, insert_counter,FINAL_TABLE_NAME):
                                 b_tags = div.find_all("b")
                                 if b_tags:
                                     for b_tag in b_tags:
-                                        key = b_tag.get_text(strip=True).replace(":", "").replace(" ", "_").lower()
+                                        key = sanitize_key(
+                                            b_tag.get_text(strip=True).replace(":", "").replace(" ", "_"))
 
                                         # Extract everything after this <b> until the next <b> or <br>
                                         value_parts = []
                                         for sibling in b_tag.next_siblings:
-                                            if sibling.name == "b":  # stop if next <b> starts
+                                            if getattr(sibling, "name", None) == "b":  # stop if next <b> starts
                                                 break
-                                            if sibling.name == "br":
+                                            if getattr(sibling, "name", None) == "br":
                                                 continue
                                             text = str(sibling).strip()
                                             if text:
@@ -124,13 +173,15 @@ def process_json_file(file_path, conn, srid, insert_counter,FINAL_TABLE_NAME):
                                             dynamic_columns[key] = value
                                     continue
 
-                                # Case 2: "Label: Value" (plain text)
+                                # Case 2: "Label: Value" (plain text inside div)
                                 text = div.get_text(" ", strip=True)
-                                if ":" in text:
-                                    parts = text.split(":", 1)
-                                    key = parts[0].strip().replace(" ", "_").lower()
+                                separator = ":" if ":" in text else "=" if "=" in text else None
+                                if separator:
+                                    parts = text.split(separator, 1)
+                                    key = sanitize_key(parts[0].strip().replace(" ", "_"))
                                     value = parts[1].strip()
 
+                                    # Extract link if present
                                     a_tag = div.find("a")
                                     if a_tag and a_tag.get("href"):
                                         value = a_tag["href"].strip()
@@ -138,17 +189,47 @@ def process_json_file(file_path, conn, srid, insert_counter,FINAL_TABLE_NAME):
                                     if value:
                                         dynamic_columns[key] = value
 
+                                plain_text = div.get_text(strip=True)
+                                if plain_text:
+                                    dynamic_columns["tip_value"] = plain_text
+
                         # ======================
                         # Case 3: Standalone <b> tags outside <div>
                         # ======================
-                        else:
+                        elif soup.find("b"):
                             for b_tag in soup.find_all("b"):
-                                key = b_tag.get_text(strip=True).replace(":", "").replace(" ", "_").lower()
+                                key = sanitize_key(b_tag.get_text(strip=True).replace(":", "").replace(" ", "_"))
                                 value = b_tag.next_sibling
                                 if value:
                                     value = html.unescape(str(value)).strip().replace("\xa0", "").replace("\n", "")
                                     if value:
                                         dynamic_columns[key] = value
+
+                        # ======================
+                        # Case 4: Plain text with <br> separators (no <div> or <b>)
+                        # ======================
+                        else:
+                            text_parts = []
+                            for elem in soup.stripped_strings:
+                                text_parts.append(elem)
+
+                            for line in text_parts:
+                                # Look for key-value pairs separated by ':' or '='
+                                separator = "=" if "=" in line else ":" if ":" in line else None
+                                if not separator:
+                                    continue
+
+                                parts = line.split(separator, 1)
+                                key = sanitize_key(parts[0].strip().replace(" ", "_"))
+                                value = parts[1].strip()
+
+                                # Handle links (like "View: <a href=...>")
+                                a_tag = soup.find("a")
+                                if a_tag and key.startswith("view") and a_tag.get("href"):
+                                    value = a_tag["href"].strip()
+
+                                if value:
+                                    dynamic_columns[key] = value
 
                     else:
                         # ======================
@@ -157,7 +238,7 @@ def process_json_file(file_path, conn, srid, insert_counter,FINAL_TABLE_NAME):
                         for line in tip_html.splitlines():
                             if "=" in line:
                                 key, value = line.split("=", 1)
-                                key = key.strip().replace(" ", "_").lower()
+                                key = sanitize_key(key.strip().replace(" ", "_"))
                                 value = value.strip()
                                 dynamic_columns[key] = value
 
