@@ -3,11 +3,19 @@ import json
 import time
 import re
 from urllib.parse import urlparse, parse_qs
+import importlib
+from selenium import webdriver
 import undetected_chromedriver as uc
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-import importlib
+from selenium import webdriver
+from selenium.webdriver.chrome.service import Service
+from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+from webdriver_manager.chrome import ChromeDriverManager
 import config
 
 # ================= CONFIG ================= #
@@ -42,35 +50,45 @@ def get_qps_token(driver):
     return None
 
 
-def open_and_get_qps(driver):
-    importlib.reload(config)  # <-- reload config to get updated values
+def open_and_get_qps(driver, timeout=30):
+    """Open the URL, wait until fully loaded, optionally click 'Agree', and extract QPS token."""
+    importlib.reload(config)  # reload config to get updated values
     URL = config.BEACON_URL
-    """Open the URL, optionally click 'Agree', and extract QPS token."""
     print(f"\n🌐 Opening: {URL}")
     driver.get(URL)
 
+    # Wait for the page to fully load
     try:
-        wait = WebDriverWait(driver, 10)
-        # Try to find the agree button if it appears
+        WebDriverWait(driver, timeout).until(
+            lambda d: d.execute_script("return document.readyState") == "complete"
+        )
+        print("✅ Page fully loaded.")
+    except Exception as e:
+        print(f"⚠️ Timeout waiting for page load: {e}")
+
+    # Optional click on 'Agree' button if it appears
+    try:
         agree_buttons = driver.find_elements(By.CSS_SELECTOR, "a.btn.btn-primary.button-1")
         if agree_buttons:
             driver.execute_script("arguments[0].click();", agree_buttons[0])
             print("✅ Clicked 'Agree'")
+            # Wait a bit for network activity to trigger after click
+            time.sleep(3)
         else:
             print("ℹ️ 'Agree' button not shown, continuing...")
     except Exception as e:
         print(f"⚠️ No 'Agree' button this time: {e}")
 
-    # wait for network to settle
-    time.sleep(6)
-
-    qps_token = get_qps_token(driver)
+    # Wait until network logs contain QPS token
+    qps_token = None
     retry = 0
-    while not qps_token and retry < 3:
-        print("🔁 Retrying QPS capture...")
-        time.sleep(3)
+    max_retry = 10
+    while not qps_token and retry < max_retry:
         qps_token = get_qps_token(driver)
-        retry += 1
+        if not qps_token:
+            time.sleep(2)
+            retry += 1
+            print(f"🔁 Waiting for QPS token... attempt {retry}/{max_retry}")
 
     if not qps_token:
         print("❌ Still no QPS token found after retries.")
@@ -78,6 +96,7 @@ def open_and_get_qps(driver):
         print(f"✅ Got QPS token: {qps_token[:60]}...")
 
     return qps_token
+
 
 
 def download_batch(driver, qps_token, extents, batch_num,REQUEST_TEMPLATE):
@@ -201,7 +220,9 @@ def capture_qps_and_download():
             "profile.default_content_setting_values.automatic_downloads": 1  # ✅ allow multiple automatic downloads
         }
         options.add_experimental_option("prefs", prefs)
-        driver = uc.Chrome(options=options)
+        # ✅ Automatically matches Chrome version 141
+        service = Service(ChromeDriverManager().install())
+        driver = webdriver.Chrome(service=service, options=options)
         driver.execute_cdp_cmd("Network.enable", {})
 
         qps_token = open_and_get_qps(driver)

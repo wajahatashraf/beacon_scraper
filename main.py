@@ -1,7 +1,7 @@
 import csv
 import os
 import time
-from table_creater import extract_srid, get_bounding_box, create_table_and_grid, export_grid_to_json, extract_zoning_layer_info
+from table_creater import get_bounding_box, create_table_and_grid, export_grid_to_json,extract_srid_and_layers
 from python_java import capture_qps_and_download
 from db_insert_json import db_insert
 from verify_record import update_missing_features
@@ -93,9 +93,8 @@ def main():
 
                 # === Step 1: Making Table ===
                 print("🚀  ====== Starting Making Table ======")
-                srid = extract_srid()
+                srid, zoning_layers= extract_srid_and_layers()
 
-                zoning_layers = extract_zoning_layer_info()
                 if not zoning_layers:
                     message = "No zoning layers found."
                     print(f"\t⚠️ {message}")

@@ -17,19 +17,24 @@ import importlib
 
 
 # ============= STEP 1: Extract SRID =============
-def extract_srid():
-    importlib.reload(config)  # <-- reload config to get updated values
+def extract_srid_and_layers():
+    importlib.reload(config)
     BEACON_URL = config.BEACON_URL
+    FOLDER_NAME = config.FOLDER_NAME
+
     opts = Options()
-    opts.add_argument("--start-maximized")
+    # opts.add_argument("--headless")  # Run without opening a window
+    opts.add_argument("--disable-gpu")
+    opts.add_argument("--no-sandbox")
+    opts.add_argument("--disable-dev-shm-usage")
     service = Service(ChromeDriverManager().install())
     driver = webdriver.Chrome(service=service, options=opts)
 
     driver.get(BEACON_URL)
     print("	🧩 Getting SRID")
+
     try:
-        # Click "Agree" button if it appears
-        wait = WebDriverWait(driver, 15)
+        wait = WebDriverWait(driver, 10)
         agree_button = wait.until(
             EC.element_to_be_clickable((By.CSS_SELECTOR, "a.btn.btn-primary.button-1"))
         )
@@ -38,13 +43,11 @@ def extract_srid():
     except Exception:
         print("		⚠️ 'Agree' button not found or already accepted.")
 
-    # Wait for page content to load
-    time.sleep(5)
+    time.sleep(3)  # give JS some time to render
 
-    # Get page source
     page_source = driver.page_source
 
-    # Extract SRID using regex
+    # Extract SRID
     srid_match = re.search(r'"Projections":\[\{.*?"SRID":(\d+)', page_source)
     if srid_match:
         srid = srid_match.group(1)
@@ -52,45 +55,10 @@ def extract_srid():
     else:
         print("		    ❌ SRID not found in page source.")
 
-    return srid
-
-    driver.quit()
-
-# ======================================================
-# STEP 1.2: Extract Zoning Layer Info
-# ======================================================
-def extract_zoning_layer_info():
-    importlib.reload(config)  # <-- reload config to get updated values
-    BEACON_URL = config.BEACON_URL
-    FOLDER_NAME = config.FOLDER_NAME
-    opts = Options()
-    opts.add_argument("--start-maximized")
-    service = Service(ChromeDriverManager().install())
-    driver = webdriver.Chrome(service=service, options=opts)
-
-    driver.get(BEACON_URL)
+    # Extract zoning layers
     print("\n	🧩 Getting Zoning Layer Info")
-    try:
-        # Click "Agree" button if it appears
-        wait = WebDriverWait(driver, 15)
-        agree_button = wait.until(
-            EC.element_to_be_clickable((By.CSS_SELECTOR, "a.btn.btn-primary.button-1"))
-        )
-        agree_button.click()
-        print("		✅ Clicked 'Agree' button.")
-    except Exception:
-        print("		⚠️ 'Agree' button not found or already accepted.")
-
-    # Wait for page content to load
-    time.sleep(5)
-
-    # Get page source
-    page_source = driver.page_source
-
-    # Extract all LayerId / LayerName pairs
     pattern = re.compile(r'{"LayerId":(\d+).*?"LayerName":"(.*?)"', re.DOTALL)
     matches = pattern.findall(page_source)
-
     zoning_layers = [
         {"LayerId": int(layer_id), "LayerName": re.sub(r'[^a-zA-Z0-9_ ]', '', name.replace("/", " ")).strip()}
         for layer_id, name in matches
@@ -99,22 +67,21 @@ def extract_zoning_layer_info():
 
     driver.quit()
 
-    if not zoning_layers:
+    # Save zoning layers
+    if zoning_layers:
+        print("		✅ Found zoning layers:")
+        for layer in zoning_layers:
+            print(f"		   🗂️ {layer['LayerName']} (LayerId: {layer['LayerId']})")
+        os.makedirs(FOLDER_NAME, exist_ok=True)
+        layers_path = os.path.join(FOLDER_NAME, "zoning_layers.json")
+        with open(layers_path, "w", encoding="utf-8") as f:
+            json.dump(zoning_layers, f, indent=2)
+        print(f"		💾 Saved zoning layer info to: {layers_path}")
+    else:
         print("		⚠️ No zoning layers found.")
-        return []
 
-    print("		✅ Found zoning layers:")
-    for layer in zoning_layers:
-        print(f"		   🗂️ {layer['LayerName']} (LayerId: {layer['LayerId']})")
+    return srid, zoning_layers
 
-    # Save to JSON file
-    os.makedirs(FOLDER_NAME, exist_ok=True)
-    layers_path = os.path.join(FOLDER_NAME, "zoning_layers.json")
-    with open(layers_path, "w", encoding="utf-8") as f:
-        json.dump(zoning_layers, f, indent=2)
-    print(f"		💾 Saved zoning layer info to: {layers_path}")
-
-    return zoning_layers
 
 # ============= STEP 2: Get Bounding Box =============
 # def get_bounding_box():
