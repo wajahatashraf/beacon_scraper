@@ -12,7 +12,7 @@ import undetected_chromedriver as uc
 
 URL = "https://beacon.schneidercorp.com/Application.aspx?AppID=55&LayerID=375&PageTypeID=1&PageID=916"
 FOLDER_NAME = "output"
-
+print(f'folder path: {FOLDER_NAME}')
 def make_options(headless: bool):
     opts = uc.ChromeOptions()
     user_agent = (
