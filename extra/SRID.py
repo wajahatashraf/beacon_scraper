@@ -14,6 +14,7 @@ URL = "https://beacon.schneidercorp.com/Application.aspx?AppID=55&LayerID=375&Pa
 def extract_srid():
     opts = Options()
     opts.add_argument("--start-maximized")
+    opts.add_argument("--headless=new")
     service = Service(ChromeDriverManager().install())
     driver = webdriver.Chrome(service=service, options=opts)
 
